@@ -1,0 +1,4 @@
+Pillow
+streamlink
+tesserocr
+opencv2
