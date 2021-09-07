@@ -1,4 +1,4 @@
 Pillow
 streamlink
-tesserocr
-opencv2
+opencv-python
+numpy

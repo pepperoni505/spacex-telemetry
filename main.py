@@ -1,12 +1,9 @@
 import streamlink
-import pytesseract
 import cv2
 from PIL import Image
 import numpy as np
 
 DATA_FPS = 5 # number of frames per second we should get the data at
-
-pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
 
 def getStreamURL(url, quality='best'):
     streams = streamlink.streams(url)
