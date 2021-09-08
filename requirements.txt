@@ -1,4 +1,5 @@
 Pillow
-streamlink
+pafy
+youtube-dl
 opencv-python
 numpy

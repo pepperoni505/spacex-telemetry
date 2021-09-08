@@ -1,9 +1,32 @@
 import os
 import cv2
 import numpy as np
+import pafy
 from math import fabs
 
 # Credit to https://github.com/shahar603/SpaceXtract for providing an idea on how to extract text from an image
+
+def get_video_url(youtube_url):
+    """
+    Returns a URL to the actual video stream from any given YouTube URL
+
+    :param youtube_url: Link to a YouTube video
+
+    :return video_url: Link to the video stream
+    """
+    video = pafy.new(youtube_url)
+    streams = video.allstreams
+    
+    # Create a dictionary of all the mp4 videos found with their resolution as the key and their url as the value
+    stream_urls = dict([(s.resolution, s.url) for s in streams if (s.extension == "mp4") and (s.mediatype == "video")])
+
+    # We default to 1080p, and go to 720p if 1080p isn't available. For now if neither are available, we throw an error. In the future, this could be improved
+    if "1920x1080" in stream_urls:
+        return stream_urls["1920x1080"]
+    elif "1280x720" in stream_urls:
+        return stream_urls["1280x720"]
+    else:
+        raise RuntimeError("No video streams are available")
 
 def remove_duplicates(list, min_distance=10):
     """
@@ -69,6 +92,19 @@ def get_text_from_image(image, template_dir, characters, min_probability=0.75):
     
     return found_text
 
+def find_liftoff_time(stream):
+    stream_fps = stream.get(cv2.CAP_PROP_FPS)
+    stream_height = int(stream.get(cv2.CAP_PROP_FRAME_HEIGHT))
+    stream_width = int(stream.get(cv2.CAP_PROP_FRAME_WIDTH))
+    
+    frame_time = int(1000 / stream_fps) # Get how long each frame should appear in milliseconds
+    while True:
+        ret, frame = stream.read()
+        if ret:
+            cv2.imshow('video', frame)
+            cv2.waitKey(frame_time)
+
+
 def main():
     current_directory = os.path.dirname(os.path.realpath(__file__))
     characters_path = os.path.join(os.path.dirname(current_directory), 'characters/telemetry') # came from 1080p
@@ -76,6 +112,9 @@ def main():
     characters = ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", ".", "-"]
     text = get_text_from_image(test_image, characters_path, characters, 0.75)
     print(text)
+    # stream_url = get_video_url("https://www.youtube.com/watch?v=QJXxVtp3KqI")
+    # stream = cv2.VideoCapture(stream_url)
+    # find_liftoff_time(stream)
     
 
 
