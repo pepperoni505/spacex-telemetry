@@ -3,3 +3,7 @@ pafy
 youtube-dl
 opencv-python
 numpy
+imutils
+paddlepaddle
+paddleocr
+matplotlib

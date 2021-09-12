@@ -1,73 +1,165 @@
-import streamlink
+import os
+import re
 import cv2
-from PIL import Image
-import numpy as np
+import pafy
+import imutils
+import matplotlib.pyplot as plt
+from paddleocr import PaddleOCR
 
-DATA_FPS = 5 # number of frames per second we should get the data at
 
-def getStreamURL(url, quality='best'):
-    streams = streamlink.streams(url)
-    if streams:
-        return streams[quality].to_url()
-    else:
-        raise ValueError('No streams are available')
+# Resolution of image that the characters were taken from
+WIDTH = 1920
+HEIGHT = 1080
 
-def getStreamData(url):
-    stream_url = getStreamURL(url, 'best')
-    stream_data = cv2.VideoCapture(stream_url)
-    return stream_data
+# Launch clock
+LAUNCH_CLOCK_X_COORDS = (816, 1100) # X, X + W
+LAUNCH_CLOCK_Y_COORDS = (974, 1031) # Y, Y + H
 
-def isTextPresent(image):
-    """
-    Credit to https://stackoverflow.com/questions/60906448/how-to-detect-text-using-opencv
-    """
-    # Convert to grayscale
-    grayscale_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+LAUNCH_CLOCK_RATIO_X = [x / WIDTH for x in LAUNCH_CLOCK_X_COORDS]
+LAUNCH_CLOCK_RATIO_Y = [y / HEIGHT for y in LAUNCH_CLOCK_Y_COORDS]
 
-    # Performing OTSU threshold
-    ret, thresh1 = cv2.threshold(grayscale_image, 0, 255, cv2.THRESH_OTSU | cv2.THRESH_BINARY_INV)
-    
-    # Specify structure shape and kernel size. 
-    # Kernel size increases or decreases the area 
-    # of the rectangle to be detected.
-    # A smaller value like (10, 10) will detect 
-    # each word instead of a sentence.
-    rect_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (18, 18))
-    
-    # Appplying dilation on the threshold image
-    dilation = cv2.dilate(thresh1, rect_kernel, iterations = 1)
-    
-    # Finding contours
-    contours, hierarchy = cv2.findContours(dilation, cv2.RETR_EXTERNAL, 
-                                                    cv2.CHAIN_APPROX_NONE)
-    
-    # Creating a copy of image
-    im2 = image.copy()
+# Stage 1 speed
+STAGE1_SPEED_X_COORDS = (106, 226) # X, X + W
+STAGE1_SPEED_Y_COORDS = (960, 1008) # Y, Y + H
 
-    print(contours)
+STAGE1_SPEED_RATIO_X = [x / WIDTH for x in STAGE1_SPEED_X_COORDS]
+STAGE1_SPEED_RATIO_Y = [y / HEIGHT for y in STAGE1_SPEED_Y_COORDS]
 
-def getBroadcastStart(stream_data):
-    stream_fps = stream_data.get(cv2.CAP_PROP_FPS)
-    stream_height = int(stream_data.get(cv2.CAP_PROP_FRAME_HEIGHT))
-    stream_width = int(stream_data.get(cv2.CAP_PROP_FRAME_WIDTH))
-    while True:
-        ret, frame = stream_data.read()
-        if ret:
-            frame_number = int(stream_data.get(cv2.CAP_PROP_POS_FRAMES) - 1)
-            frame_interval = stream_fps / DATA_FPS
-            if frame_number % frame_interval:
-                # Get data from this frame
-                y1 = int(stream_height - (stream_height / 5)) # The telemetry is on the bottom fifth of the screen, so calculate where that is based off the resolution
-                cropped_frame = frame[0:stream_width, y1:stream_height]
-                grayscale_image = cv2.cvtColor(cropped_frame, cv2.COLOR_BGR2GRAY)
-                print(pytesseract.image_to_string(grayscale_image))
-                print(int(stream_data.get(cv2.CAP_PROP_POS_MSEC))/1000)
+# Mission name
+MISSION_NAME_X_COORDS = (716, 1200) # X, X + W
+MISSION_NAME_Y_COORDS = (1026, 1051) # Y, Y + H
+
+MISSION_NAME_RATIO_X = [x / WIDTH for x in MISSION_NAME_X_COORDS]
+MISSION_NAME_RATIO_Y = [y / HEIGHT for y in MISSION_NAME_Y_COORDS]
+
+ocr = PaddleOCR(lang='en', use_angle_cls=True, show_log=False)
+
+class Extract:
+
+    def __init__(self, url):
+        self.url = self._get_video_url(url)
+        self.stream = cv2.VideoCapture(self.url)
+        self.mission_name = self.get_mission_name()
+
+    def _get_video_url(self, youtube_url):
+        """
+        Returns a URL to the actual video stream from any given YouTube URL
+
+        :param youtube_url: Link to a YouTube video
+
+        :return video_url: Link to the video stream
+        """
+        video = pafy.new(youtube_url)
+        streams = video.allstreams
+        
+        # Create a dictionary of all the mp4 videos found with their resolution as the key and their url as the value
+        stream_urls = dict([(s.resolution, s.url) for s in streams if (s.extension == "mp4") and (s.mediatype == "video")])
+
+        # We default to 1080p, and go to 720p if 1080p isn't available. For now if neither are available, we throw an error. In the future, this could be improved
+        if "1920x1080" in stream_urls:
+            return stream_urls["1920x1080"]
+        elif "1280x720" in stream_urls:
+            return stream_urls["1280x720"]
         else:
-            break
+            raise RuntimeError("No video streams are available")
+
+    def _clock_time_to_seconds(self, timestamp):
+        h, m, s = timestamp.split(':')
+        return (int(h) * 3600) + (int(m) * 60) + int(s)
+
+    def _calculate_bounding_box(self, x_tuple, y_tuple):
+        stream_height = int(self.stream.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        stream_width = int(self.stream.get(cv2.CAP_PROP_FRAME_WIDTH))
+        x1 = int(x_tuple[0] * stream_width)
+        x2 = int(x_tuple[1] * stream_width)
+        y1 = int(y_tuple[0] * stream_height)
+        y2 = int(y_tuple[1] * stream_height)
+        return x1, x2, y1, y2
+
+    def _get_text_from_image(self, image):
+        if image.shape[0] < 50: # PaddleOCR doesn't seem to work properly for images with a height less than 50, so we should resize the image
+            image = imutils.resize(image, height=50)
+
+        image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+
+        _, image = cv2.threshold(image, 125, 255, cv2.THRESH_BINARY)
+
+        result = ocr.ocr(image)
+        found_text = []
+        for line in result:
+            found_text.append(line[1][0])
+
+        return found_text
+
+
+    def find_liftoff_time(self):
+        stream_fps = self.stream.get(cv2.CAP_PROP_FPS)
+
+        self.stream.set(cv2.CAP_PROP_POS_FRAMES, (300 * stream_fps)) # SpaceX streams tend to start around the 5 minute mark, so start our search there.
+
+        x1, x2, y1, y2 = self._calculate_bounding_box(LAUNCH_CLOCK_RATIO_X, LAUNCH_CLOCK_RATIO_Y)
+
+        while True:
+            ret, frame = self.stream.read()
+            if ret:
+                current_frame = self.stream.get(cv2.CAP_PROP_POS_FRAMES)
+                result = self._get_text_from_image(frame[y1: y2, x1:x2])
+                for text in result:
+                    if text.startswith('T-') and len(text) == 10:
+                        # Remove "T-" from text
+                        text = text[2:]
+                        # Get seconds from the text
+                        total_seconds = self._clock_time_to_seconds(text)
+
+                        # Convert seconds to frame
+                        frame_number = total_seconds * stream_fps
+                        return frame_number + current_frame
+
+                self.stream.set(cv2.CAP_PROP_POS_FRAMES, current_frame + (30 * stream_fps))
+
+    def get_mission_name(self):
+        x1, x2, y1, y2 = self._calculate_bounding_box(MISSION_NAME_RATIO_X, MISSION_NAME_RATIO_Y)
+        liftoff_frame = self.find_liftoff_time()
+        self.stream.set(cv2.CAP_PROP_POS_FRAMES, liftoff_frame)
+
+        ret, frame = self.stream.read()
+        if ret:
+            result = self._get_text_from_image(frame[y1:y2, x1:x2])
+            for text in result:
+                if len(text) > 5: # Arbitrary length to check for
+                    return text
+
+    def get_time_since_liftoff(self):
+        return
+
+    def get_telemetry(self):
+        # Find liftoff
+        liftoff_frame = self.find_liftoff_time() # TODO: Start at T-10 and detect when T- switches to T+
+        self.stream.set(cv2.CAP_PROP_POS_FRAMES, liftoff_frame)
+
+        stream_fps = self.stream.get(cv2.CAP_PROP_FPS)
+
+        x1, x2, y1, y2 = self._calculate_bounding_box(STAGE1_SPEED_RATIO_X, STAGE1_SPEED_RATIO_Y)
+
+        while True:
+            ret, frame = self.stream.read()
+            if ret:
+                cv2.imshow('video', frame)
+                current_frame = self.stream.get(cv2.CAP_PROP_POS_FRAMES) # multi threading processing
+
+                print((current_frame - liftoff_frame) / stream_fps)
+
+                result = self._get_text_from_image(frame[y1:y2, x1:x2])
+                for text in result:
+                    if text.isdigit():
+                        print(f"Speed: {text} KM/H, Time: {(current_frame - liftoff_frame) / stream_fps}")
+                cv2.waitKey(int(1000 / stream_fps))
+
 
 def main():
-    stream_data = getStreamData("https://www.youtube.com/watch?v=QJXxVtp3KqI")
-    getBroadcastStart(stream_data)
+    extract = Extract("https://www.youtube.com/watch?v=QJXxVtp3KqI")
+    extract.get_telemetry()
+
 
 if __name__ == '__main__':
     main()
