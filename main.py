@@ -23,6 +23,13 @@ STAGE1_SPEED_Y_COORDS = (960, 1008) # Y, Y + H
 STAGE1_SPEED_RATIO_X = [x / WIDTH for x in STAGE1_SPEED_X_COORDS]
 STAGE1_SPEED_RATIO_Y = [y / HEIGHT for y in STAGE1_SPEED_Y_COORDS]
 
+# Stage 1 altitidue
+STAGE1_ALTITUDE_X_COORDS = (267, 387) # X, X + W
+STAGE1_ALTITUDE_Y_COORDS = (960, 1008) # Y, Y + H
+
+STAGE1_ALTITUDE_RATIO_X = [x / WIDTH for x in STAGE1_ALTITUDE_X_COORDS]
+STAGE1_ALTITUDE_RATIO_Y = [y / HEIGHT for y in STAGE1_ALTITUDE_Y_COORDS]
+
 # Mission name
 MISSION_NAME_X_COORDS = (716, 1200) # X, X + W
 MISSION_NAME_Y_COORDS = (1026, 1051) # Y, Y + H
@@ -32,7 +39,10 @@ MISSION_NAME_RATIO_Y = [y / HEIGHT for y in MISSION_NAME_Y_COORDS]
 
 MAX_SPEED_DIFFERENCE = 250 # KM/H
 
-ocr = PaddleOCR(lang='en', use_angle_cls=True, show_log=False)
+if cv2.cuda.getCudaEnabledDeviceCount() > 0: # Has GPU
+    ocr = PaddleOCR(lang='en', use_angle_cls=True, show_log=False)
+else: # Does not have GPU
+    ocr = PaddleOCR(lang='en', use_angle_cls=True, show_log=False, use_gpu=False)
 
 # TODO: WORK ON SOMEHOW MAKING VIDEO PLAY IN REALTIME, BETTER GRAPHING, LOG ALTITUDE AS WELL AS STAGE 2, CLEAN UP CODE
 
@@ -143,41 +153,65 @@ class Extract:
 
         stream_fps = self.stream.get(cv2.CAP_PROP_FPS)
 
-        x1, x2, y1, y2 = self._calculate_bounding_box(STAGE1_SPEED_RATIO_X, STAGE1_SPEED_RATIO_Y)
+        speed_x1, speed_x2, speed_y1, speed_y2 = self._calculate_bounding_box(STAGE1_SPEED_RATIO_X, STAGE1_SPEED_RATIO_Y)
+        alt_x1, alt_x2, alt_y1, alt_y2 = self._calculate_bounding_box(STAGE1_ALTITUDE_RATIO_X, STAGE1_ALTITUDE_RATIO_Y)
 
-        plt.xlabel('Seconds')
-        plt.ylabel('KM/H')
+        figure, axis = plt.subplots(1, 2)
+        axis[0].set_xlabel('Seconds')
+        axis[0].set_ylabel('KM/H')
+        axis[0].set_title('Speed vs. Time')
+
+        axis[1].set_xlabel('Seconds')
+        axis[1].set_ylabel('KM')
+        axis[1].set_title('Altitude vs. Time')
         # plt.xlim([0, 500])
         # plt.ylim([0, 10000])
         plt.ion()
         plt.show()
-        x_data = []
-        y_data = []
+        previous_x_speed = 0
+        previous_y_speed = 0
+        previous_x_alt = 0
+        previous_y_alt = 0
         while True:
             ret, frame = self.stream.read()
             if ret:
                 current_frame = self.stream.get(cv2.CAP_PROP_POS_FRAMES) # multi threading processing
                 if current_frame % stream_fps == 0.0:
-                    result = self._get_text_from_image(frame[y1:y2, x1:x2])
+                    result = self._get_text_from_image(frame[speed_y1:speed_y2, speed_x1:speed_x2])
                     for text in result:
                         if text.isdigit():
-                            previous = 0
-                            if y_data:
-                                previous = y_data[-1]
-                            if math.fabs(int(text) - previous) < MAX_SPEED_DIFFERENCE:
-                                x_data.append(int((current_frame - liftoff_frame) / stream_fps))
-                                y_data.append(int(text))
-                                plt.clf()
-                                plt.plot(x_data, y_data)
+                            if math.fabs(int(text) - previous_y_speed) < MAX_SPEED_DIFFERENCE:
+                                current_time = int((current_frame - liftoff_frame) / stream_fps)
+                                velocity = int(text)
+                                
+                                axis[0].plot([previous_x_speed, current_time], [previous_y_speed, velocity], color='blue')
+                                previous_x_speed = current_time
+                                previous_y_speed = velocity
+
+                    result = self._get_text_from_image(frame[alt_y1:alt_y2, alt_x1:alt_x2])
+                    for text in result:
+                        try:
+                            text = float(text)
+                        except:
+                            pass
+                        if type(text) == float:
+                            if math.fabs(int(text) - previous_y_alt) < 5000000:
+                                current_time = int((current_frame - liftoff_frame) / stream_fps)
+                                alt = text
+                                
+                                axis[1].plot([previous_x_alt, current_time], [previous_y_alt, alt], color='blue')
+                                previous_x_alt = current_time
+                                previous_y_alt = alt
+
                     plt.draw()
                     plt.pause(0.001)
 
-                cv2.imshow('video', frame)
-                cv2.waitKey(int(1000 / stream_fps))
+                # cv2.imshow('video', frame)
+                # cv2.waitKey(int(1000 / stream_fps))
 
 
 def main():
-    extract = Extract("https://www.youtube.com/watch?v=QJXxVtp3KqI")
+    extract = Extract("https://www.youtube.com/watch?v=4372QYiPZB4")
     extract.get_telemetry()
 
 
