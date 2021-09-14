@@ -1,11 +1,9 @@
-import os
-import re
 import cv2
 import pafy
+import math
 import imutils
 import matplotlib.pyplot as plt
 from paddleocr import PaddleOCR
-
 
 # Resolution of image that the characters were taken from
 WIDTH = 1920
@@ -32,16 +30,20 @@ MISSION_NAME_Y_COORDS = (1026, 1051) # Y, Y + H
 MISSION_NAME_RATIO_X = [x / WIDTH for x in MISSION_NAME_X_COORDS]
 MISSION_NAME_RATIO_Y = [y / HEIGHT for y in MISSION_NAME_Y_COORDS]
 
+MAX_SPEED_DIFFERENCE = 250 # KM/H
+
 ocr = PaddleOCR(lang='en', use_angle_cls=True, show_log=False)
+
+# TODO: WORK ON SOMEHOW MAKING VIDEO PLAY IN REALTIME, BETTER GRAPHING, LOG ALTITUDE AS WELL AS STAGE 2, CLEAN UP CODE
 
 class Extract:
 
     def __init__(self, url):
-        self.url = self._get_video_url(url)
+        self.url = self._get_video_url(url, "1280x720")
         self.stream = cv2.VideoCapture(self.url)
         self.mission_name = self.get_mission_name()
 
-    def _get_video_url(self, youtube_url):
+    def _get_video_url(self, youtube_url, resolution):
         """
         Returns a URL to the actual video stream from any given YouTube URL
 
@@ -56,7 +58,9 @@ class Extract:
         stream_urls = dict([(s.resolution, s.url) for s in streams if (s.extension == "mp4") and (s.mediatype == "video")])
 
         # We default to 1080p, and go to 720p if 1080p isn't available. For now if neither are available, we throw an error. In the future, this could be improved
-        if "1920x1080" in stream_urls:
+        if resolution in stream_urls:
+            return stream_urls[resolution]
+        elif "1920x1080" in stream_urls:
             return stream_urls["1920x1080"]
         elif "1280x720" in stream_urls:
             return stream_urls["1280x720"]
@@ -141,18 +145,34 @@ class Extract:
 
         x1, x2, y1, y2 = self._calculate_bounding_box(STAGE1_SPEED_RATIO_X, STAGE1_SPEED_RATIO_Y)
 
+        plt.xlabel('Seconds')
+        plt.ylabel('KM/H')
+        # plt.xlim([0, 500])
+        # plt.ylim([0, 10000])
+        plt.ion()
+        plt.show()
+        x_data = []
+        y_data = []
         while True:
             ret, frame = self.stream.read()
             if ret:
-                cv2.imshow('video', frame)
                 current_frame = self.stream.get(cv2.CAP_PROP_POS_FRAMES) # multi threading processing
+                if current_frame % stream_fps == 0.0:
+                    result = self._get_text_from_image(frame[y1:y2, x1:x2])
+                    for text in result:
+                        if text.isdigit():
+                            previous = 0
+                            if y_data:
+                                previous = y_data[-1]
+                            if math.fabs(int(text) - previous) < MAX_SPEED_DIFFERENCE:
+                                x_data.append(int((current_frame - liftoff_frame) / stream_fps))
+                                y_data.append(int(text))
+                                plt.clf()
+                                plt.plot(x_data, y_data)
+                    plt.draw()
+                    plt.pause(0.001)
 
-                print((current_frame - liftoff_frame) / stream_fps)
-
-                result = self._get_text_from_image(frame[y1:y2, x1:x2])
-                for text in result:
-                    if text.isdigit():
-                        print(f"Speed: {text} KM/H, Time: {(current_frame - liftoff_frame) / stream_fps}")
+                cv2.imshow('video', frame)
                 cv2.waitKey(int(1000 / stream_fps))
 
 
